@@ -195,7 +195,7 @@ const num_workers = 2;
 const max_aio_ids = 0x80;
 
 // highest priority we can achieve given our credentials
-// const rtprio = View2.of(RTP_PRIO_REALTIME, 0x100);
+const rtprio = View2.of(RTP_PRIO_REALTIME, 0x100);
 
 // CONFIG CONSTANTS
 const main_core = 7;

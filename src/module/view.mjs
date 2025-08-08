@@ -78,16 +78,33 @@ function ViewMixin(superclass) {
   //
   // TODO: Assumes PS4, support PS5 as well
   // FIXME: Define the from/of workaround functions once
-  if (0x600 <= config.target && config.target < 0x1000) {
-    res.from = function from(...args) {
-      const base = this.__proto__;
-      return new this(base.from(...args).buffer);
-    };
+  const is_ps4 = (config.target & 0x10000) === 0;
+  const version = config.target & 0xffff;
+  if (is_ps4) {
+    if (0x600 <= config.target && config.target < 0x1000) {
+      res.from = function from(...args) {
+        const base = this.__proto__;
+        return new this(base.from(...args).buffer);
+      };
 
-    res.of = function of(...args) {
-      const base = this.__proto__;
-      return new this(base.of(...args).buffer);
-    };
+      res.of = function of(...args) {
+        const base = this.__proto__;
+        return new this(base.of(...args).buffer);
+      };
+    }
+  } else {
+    // same code seems to work for PS5 (at least 3.20. Depending on higher fws, this can be made unconditional)
+    if (0x320 == version) {
+      res.from = function from(...args) {
+        const base = this.__proto__;
+        return new this(base.from(...args).buffer);
+      };
+
+      res.of = function of(...args) {
+        const base = this.__proto__;
+        return new this(base.of(...args).buffer);
+      }
+    }
   }
 
   return res;
