@@ -93,9 +93,9 @@ function ViewMixin(superclass) {
   return res;
 }
 
-export class View1 extends ViewMixin(Uint8Array) {}
-export class View2 extends ViewMixin(Uint16Array) {}
-export class View4 extends ViewMixin(Uint32Array) {}
+export class View1 extends ViewMixin(Uint8Array) { }
+export class View2 extends ViewMixin(Uint16Array) { }
+export class View4 extends ViewMixin(Uint32Array) { }
 
 export class Buffer extends BufferView {
   get addr() {
@@ -127,6 +127,14 @@ if (0x600 <= config.target && config.target < 0x1000) {
     return new this(base.of(...args).buffer);
   };
 }
+Buffer.from = function from(...args) {
+  const base = this.__proto__;
+  return new this(base.from(...args).buffer);
+};
+Buffer.of = function of(...args) {
+  const base = this.__proto__;
+  return new this(base.of(...args).buffer);
+};
 
 const VariableMixin = (superclass) =>
   class extends superclass {
@@ -152,10 +160,10 @@ const VariableMixin = (superclass) =>
     }
   };
 
-export class Byte extends VariableMixin(View1) {}
-export class Short extends VariableMixin(View2) {}
+export class Byte extends VariableMixin(View1) { }
+export class Short extends VariableMixin(View2) { }
 // Int was already taken by int64.mjs
-export class Word extends VariableMixin(View4) {}
+export class Word extends VariableMixin(View4) { }
 
 export class LongArray {
   constructor(length) {
@@ -257,4 +265,4 @@ export class Long extends Word64Mixin(Int) {
     return new Addr(this);
   }
 }
-export class Pointer extends Word64Mixin(Addr) {}
+export class Pointer extends Word64Mixin(Addr) { }

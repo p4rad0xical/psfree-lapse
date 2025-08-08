@@ -48,6 +48,9 @@ import * as fw_ps4_900 from "./lapse/ps4/900.mjs";
 import * as fw_ps4_903 from "./lapse/ps4/903.mjs";
 import * as fw_ps4_950 from "./lapse/ps4/950.mjs";
 
+// PS5 imports
+import * as fw_ps5_320 from './lapse/ps5/320.mjs';
+
 const t1 = performance.now();
 
 // check if we are running on a supported firmware version
@@ -104,7 +107,9 @@ const fw_config = (() => {
       return fw_ps4_950;
     }
   } else {
-    // TODO: PS5
+    if (0x320 == version) {
+      return fw_ps5_320;
+    }
   }
   throw new RangeError(`unsupported: console: PS${is_ps4 ? "4" : "5"} | firmware: ${hex(version)}`);
 })();
@@ -190,7 +195,7 @@ const num_workers = 2;
 const max_aio_ids = 0x80;
 
 // highest priority we can achieve given our credentials
-const rtprio = View2.of(RTP_PRIO_REALTIME, 0x100);
+// const rtprio = View2.of(RTP_PRIO_REALTIME, 0x100);
 
 // CONFIG CONSTANTS
 const main_core = 7;
@@ -1703,6 +1708,7 @@ export async function kexploit() {
   // If setuid is successful, we dont need to run the kernel exploit again
   try {
     if (sysi("setuid", 0) == 0) {
+      log(`Attempting setuid: ${sysi("setuid", 0)}`)
       log("kernel already patched, skipping kexploit");
       return true;
     }

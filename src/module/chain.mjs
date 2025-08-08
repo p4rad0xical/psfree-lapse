@@ -535,11 +535,15 @@ export function get_gadget(map, insn_str) {
 }
 
 function load_fw_specific(version) {
+  const value = version & 0xffff;
+  
   if (version & 0x10000) {
+    if (value == 0x320) {
+      return import("../rop/ps5/320.mjs");
+    }
     throw RangeError("PS5 not supported yet");
   }
 
-  const value = version & 0xffff;
   // we don't want to bother with very old firmwares that don't support
   // ECMAScript 2015. 6.xx WebKit poisons the pointer fields of some types
   // which can be annoying to deal with
