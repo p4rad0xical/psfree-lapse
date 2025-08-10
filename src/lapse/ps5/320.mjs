@@ -19,12 +19,12 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.  */
 
 export const pthread_offsets = new Map(
   Object.entries({
-    pthread_create: 0x2CED0,
-    pthread_join: 0x2F460,
-    // pthread_barrier_init: 0x283d0,
-    // pthread_barrier_wait: 0xb8c0,
-    // pthread_barrier_destroy: 0x9c10,
-    pthread_exit: 0x20A80,
+    pthread_create: 0x2ced0,
+    pthread_join: 0x2f460,
+    pthread_barrier_init: 0xd930,
+    pthread_barrier_wait: 0x26040,
+    pthread_barrier_destroy: 0x129b0,
+    pthread_exit: 0x20a80,
   }),
 );
 

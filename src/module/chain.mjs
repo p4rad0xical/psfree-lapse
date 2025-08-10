@@ -321,6 +321,11 @@ export class ChainBase {
   }
 
   push_syscall(syscall_name, ...args) {
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === null || args[i] === undefined) {
+        throw Error(`${syscall_name} had ${JSON.stringify(args)} as params`);
+      }
+    }
     if (typeof syscall_name !== "string") {
       throw TypeError(`syscall_name not a string: ${syscall_name}`);
     }
@@ -487,9 +492,14 @@ export class ChainBase {
 
   sysi(...args) {
     const errno = this._errno;
+    // let debug = true;
+    // if (args[0] === "cpuset_setaffinity") debug = true;
+    // if (debug) alert(`BEFORE: args: ${args.concat('')} errno: ${new Array(errno).concat('')}`);
     this.do_syscall_clear_errno(...args);
+    // if (debug) alert(`AFTER: args: ${args.concat('')} errno: ${new Array(errno).concat('')}`);
 
     const err = errno[0];
+    // if (debug) alert(`ERR: ${err}`);
     if (err !== 0) {
       throw Error(`syscall(${args[0]}) errno: ${err}`);
     }
@@ -536,7 +546,7 @@ export function get_gadget(map, insn_str) {
 
 function load_fw_specific(version) {
   const value = version & 0xffff;
-  
+
   if (version & 0x10000) {
     if (value == 0x320) {
       return import("../rop/ps5/320.mjs");
