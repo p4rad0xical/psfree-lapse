@@ -28,6 +28,26 @@ export const pthread_offsets = new Map(
   }),
 );
 
+export const kernel_offsets = new Map(
+  Object.entries({
+    data_base: 0x0BD0000,
+    data_size: 0x08871930,
+
+    data_base_dynamic: 0x00010000,
+    data_base_to_dynamic: 0x067D1B90,
+    data_base_allproc: 0x0276DC58,
+    data_base_security_flags: 0x06466474,
+    data_base_rootvnode: 0x067AB4C0,
+    data_base_kernel_pmap_store: 0x031BE218,
+    data_base_data_cave: 0x06140000,  // Unconfirmed
+    data_base_gvmspace: 0x06423F80,
+
+    pmap_store_pml4pml4i: -0x1C,
+    pmap_store_dmpml4i: 0x288,
+    pmap_store_dmpdpi: 0x28C,
+  })
+);
+
 // export const off_kstr = null;
 // export const off_cpuid_to_pcpu = null;
 
