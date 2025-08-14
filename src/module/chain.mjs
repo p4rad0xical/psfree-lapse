@@ -91,6 +91,7 @@ export const syscall_map = new Map(
     aio_multi_cancel: 666,
     aio_submit_cmd: 669,
     blockpool_move: 673,
+    pipe2: 687,
   }),
 );
 

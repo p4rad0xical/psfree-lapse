@@ -48,6 +48,9 @@ export const kernel_offsets = new Map(
   })
 );
 
+export const off_longjmp = 0x5F990;
+export const off_sceKernelRaiseException = 0x18A30;
+
 // export const off_kstr = null;
 // export const off_cpuid_to_pcpu = null;
 

